@@ -98,10 +98,15 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .search-box input::placeholder{color:var(--muted2)}
 .filter-select{background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:5px 8px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:.73rem;outline:none;cursor:pointer}
 .filter-select option{background:var(--surface2);color:var(--text)}
-.table-scroll{overflow-x:auto}
+.table-scroll{overflow-x:auto;overflow-y:visible}
+.table-scroll::-webkit-scrollbar{height:8px}
+.table-scroll::-webkit-scrollbar-track{background:var(--surface2);border-radius:4px}
+.table-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
+.table-scroll::-webkit-scrollbar-thumb:hover{background:var(--muted2)}
+.sheet-table{width:max-content;min-width:100%;border-collapse:collapse;table-layout:auto}
 
 /* ═══ SPREADSHEET TABLE ═══ */
-.sheet-table{width:100%;border-collapse:collapse;table-layout:auto}
+
 .sheet-table th{background:var(--surface2);padding:0;border-right:1px solid var(--border);border-bottom:1px solid var(--border);position:relative;white-space:nowrap;min-width:80px}
 .th-inner{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;gap:4px}
 .th-label{font-size:.67rem;font-weight:600;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;flex:1;cursor:default}
@@ -113,6 +118,10 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .th-btn{width:18px;height:18px;border-radius:3px;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:.7rem;color:var(--muted);transition:all .12s}
 .th-btn:hover{background:var(--surface3);color:var(--text)}
 .th-btn.del:hover{color:var(--danger)}
+.th-btn.sort{color:var(--muted2)}
+.th-btn.sort.asc{color:var(--accent2)}
+.th-btn.sort.desc{color:var(--accent3)}
+.sort-arrow{font-size:.65rem;margin-left:1px}
 .th-resize{position:absolute;right:0;top:0;bottom:0;width:4px;cursor:col-resize;background:transparent}
 .th-resize:hover{background:var(--accent)}
 /* Row number column */
@@ -120,9 +129,10 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 /* Data cells */
 .sheet-table td{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:0;position:relative;min-width:80px}
 .sheet-table td.col-rownum{padding:0;text-align:center}
-.cell-inner{padding:7px 10px;font-size:.78rem;color:var(--text);min-height:34px;cursor:cell;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
-.cell-inner:empty::before{content:attr(data-placeholder);color:var(--muted2);font-size:.72rem}
-.cell-inner.editing{outline:2px solid var(--accent);outline-offset:-2px;white-space:pre-wrap;overflow:visible;background:var(--surface3);z-index:10;position:relative;cursor:text;max-width:none}
+.cell-inner{padding:6px 10px;font-size:.78rem;color:var(--text);min-height:33px;cursor:text;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px;display:flex;align-items:center}
+.cell-inner:empty::before{content:'Click to edit';color:var(--muted2);font-size:.7rem;opacity:.5}
+.cell-inner.editing{outline:2px solid var(--accent);outline-offset:-2px;white-space:normal;overflow:visible;background:var(--surface3);z-index:20;position:relative;cursor:text;max-width:none;display:block;padding:0}
+.cell-inner.editing input,.cell-inner.editing select{display:block;height:33px}
 .sheet-table tr:hover td:not(.col-rownum){background:rgba(255,255,255,.014)}
 .sheet-table tr.selected-row td{background:rgba(91,143,249,.06)}
 .sheet-table tr.selected-row td.col-rownum{background:rgba(91,143,249,.15);color:var(--accent)}
@@ -717,7 +727,7 @@ function renderSheetPage(tabId) {
 
 function filterSheet(tabId, statusVal) {
   const k = String(tabId);
-  if (!pagState[k]) pagState[k]={pg:1,filter:''};
+  if (!pagState[k]) pagState[k] = {pg:1, filter:'', sortCol:'', sortDir:'none'};
   pagState[k].filter = statusVal;
   pagState[k].pg = 1;
   renderSheetTable(k);
@@ -731,18 +741,55 @@ function renderSheetTable(tabId) {
   const cols = tab.columns || [];
   const searchEl = document.getElementById('search-' + tabId);
   const search = searchEl ? searchEl.value.toLowerCase() : '';
-  const st = pagState[tabId] || {pg:1, filter:''};
+  const st = pagState[tabId] || {pg:1, filter:'', sortCol:'', sortDir:'none'};
   const pg = st.pg || 1;
   const filter = st.filter || '';
+  const sortCol = st.sortCol || '';
+  const sortDir = st.sortDir || 'none';
 
-  // Get rows - try both string and number keys
-  let allRows = ROWS[tabId] || ROWS[Number(tabId)] || [];
+  // Get all rows
+  let allRows = [...(ROWS[tabId] || ROWS[Number(tabId)] || [])];
+
+  // ── Filter: only show rows that have at least one non-empty value ──
+  allRows = allRows.filter(row => {
+    return cols.some(col => {
+      const v = row[col.key];
+      return v != null && String(v).trim() !== '' && col.key !== 'id';
+    });
+  });
+
+  // Status filter
   if (filter) allRows = allRows.filter(r => (r.status||'').toLowerCase() === filter);
+  // Search
   if (search) allRows = allRows.filter(r => JSON.stringify(r).toLowerCase().includes(search));
+
+  // ── Sort ──
+  if (sortCol && sortDir !== 'none') {
+    allRows.sort((a, b) => {
+      let av = String(a[sortCol] || '').toLowerCase();
+      let bv = String(b[sortCol] || '').toLowerCase();
+      // Try numeric compare
+      const an = parseFloat(av), bn = parseFloat(bv);
+      if (!isNaN(an) && !isNaN(bn)) {
+        return sortDir === 'asc' ? an - bn : bn - an;
+      }
+      // Date compare
+      const ad = Date.parse(av), bd = Date.parse(bv);
+      if (!isNaN(ad) && !isNaN(bd)) {
+        return sortDir === 'asc' ? ad - bd : bd - ad;
+      }
+      // String compare
+      return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+  } else {
+    // Default: newest first (highest id first)
+    allRows.sort((a, b) => (Number(b.id)||0) - (Number(a.id)||0));
+  }
 
   const total = allRows.length;
   const totalPages = Math.ceil(total / PG) || 1;
-  const paged = allRows.slice((pg-1)*PG, pg*PG);
+  const curPg = Math.min(pg, totalPages);
+  const paged = allRows.slice((curPg-1)*PG, curPg*PG);
 
   // Find or rebuild table element
   let table = document.getElementById('table-' + tabId);
@@ -758,14 +805,18 @@ function renderSheetTable(tabId) {
   let thead = '<thead><tr><th class="col-rownum"></th>';
   cols.forEach((col, ci) => {
     const w = col.width || 120;
-    thead += `<th style="min-width:${w}px;max-width:${w+100}px">
+    const isActive = sortCol === col.key;
+    const arrow = isActive ? (sortDir === 'asc' ? '↑' : '↓') : '↕';
+    const sortCls = isActive ? ' sort ' + sortDir : ' sort';
+    thead += `<th style="min-width:${w}px">
       <div class="th-inner">
         <span class="th-label editable"
           ondblclick="startRenameCol('${tabId}',${ci},this)"
           onblur="finishRenameCol('${tabId}',${ci},this)"
           onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
-          >${esc(col.label)}</span>
+        >${esc(col.label)}</span>
         <span class="th-actions">
+          <button class="th-btn${sortCls}" onclick="toggleSort('${tabId}','${col.key}')" title="Sort by ${esc(col.label)}">${arrow}</button>
           <button class="th-btn" onclick="addColAfter('${tabId}',${ci})" title="Add column after">+</button>
           <button class="th-btn del" onclick="deleteCol('${tabId}',${ci})" title="Delete column">✕</button>
         </span>
@@ -773,50 +824,76 @@ function renderSheetTable(tabId) {
       <div class="th-resize" onmousedown="startResize(event,'${tabId}',${ci})"></div>
     </th>`;
   });
-  // Add column button at end
-  thead += `<th style="width:40px;min-width:40px">
+  thead += `<th style="width:36px;min-width:36px">
     <div class="th-inner" style="justify-content:center">
-      <button class="th-btn" onclick="addColEnd('${tabId}')" title="Add new column" style="font-size:1rem;width:24px;height:24px">+</button>
+      <button class="th-btn" onclick="addColEnd('${tabId}')" title="Add column" style="font-size:.9rem;width:22px;height:22px">+</button>
     </div>
-  </th>`;
-  thead += '</tr></thead>';
+  </th></tr></thead>`;
 
   // ── BODY ──
   let tbody = '<tbody>';
-  paged.forEach((row, ri) => {
-    const rowNum = (pg-1)*PG + ri + 1;
-    tbody += `<tr oncontextmenu="showCtxRow(event,'${tabId}','${row._dbid}')">`;
-    tbody += `<td class="col-rownum">${rowNum}</td>`;
-    cols.forEach(col => {
-      const raw = row[col.key] != null ? String(row[col.key]) : '';
-      let display = esc(raw);
-      if (col.type === 'date' && raw) display = esc(fDate(raw) || raw);
-      if (col.type === 'url' && raw) {
-        if (raw === 'Link') display = '<span class="badge badge-done" style="font-size:.6rem">Link</span>';
-        else display = `<a href="${esc(raw)}" target="_blank" style="color:var(--accent);font-size:.75rem;text-decoration:none">↗ Open</a>`;
-      }
-      const sc = statusClass(raw);
-      tbody += `<td oncontextmenu="showCtx(event,'${tabId}','${row._dbid}','${col.key}')">
-        <div class="cell-inner ${sc}"
-          data-tabid="${tabId}" data-dbid="${row._dbid}"
-          data-col="${col.key}" data-type="${col.type || 'text'}"
-          data-val="${esc(raw)}"
-          ondblclick="startCellEdit(this)"
-          title="${esc(raw)}"
-        >${display}</div></td>`;
+  if (paged.length === 0) {
+    tbody += `<tr><td colspan="${cols.length + 2}" style="text-align:center;padding:40px;color:var(--muted)">
+      <div style="font-size:1.8rem;margin-bottom:8px;opacity:.3">📭</div>
+      <div style="font-size:.85rem">No rows yet — click <strong>+ Add Row</strong> to get started</div>
+    </td></tr>`;
+  } else {
+    paged.forEach((row, ri) => {
+      const rowNum = (curPg-1)*PG + ri + 1;
+      tbody += `<tr oncontextmenu="showCtxRow(event,'${tabId}','${row._dbid}')">`;
+      tbody += `<td class="col-rownum">${rowNum}</td>`;
+      cols.forEach(col => {
+        const raw = row[col.key] != null ? String(row[col.key]) : '';
+        let display = esc(raw);
+        if (col.type === 'date' && raw) display = esc(fDate(raw) || raw);
+        if (col.type === 'url') {
+          if (!raw) { display = ''; }
+          else if (raw === 'Link') { display = '<span class="badge badge-done" style="font-size:.6rem">Link</span>'; }
+          else {
+            const href = raw.startsWith('http') ? raw : 'https://' + raw;
+            display = `<a href="${href}" target="_blank" rel="noopener" onclick="event.stopPropagation()"
+              style="color:var(--accent);font-size:.75rem;text-decoration:none">↗ Open</a>`;
+          }
+        }
+        const sc = statusClass(raw);
+        tbody += `<td oncontextmenu="showCtx(event,'${tabId}','${row._dbid}','${col.key}')">
+          <div class="cell-inner ${sc}"
+            data-tabid="${tabId}" data-dbid="${row._dbid}"
+            data-col="${col.key}" data-type="${col.type || 'text'}"
+            data-val="${esc(raw)}"
+            onclick="startCellEdit(this)"
+            title="${esc(raw)}"
+          >${display}</div></td>`;
+      });
+      tbody += '<td></td></tr>';
     });
-    tbody += '<td></td></tr>';
-  });
+  }
 
-  // Add row button
   tbody += `<tr class="add-row-tr" onclick="addRow('${tabId}')">
-    <td colspan="${cols.length + 2}">＋ Click to add a new row</td>
-  </tr>`;
-  tbody += '</tbody>';
+    <td colspan="${cols.length + 2}">＋ Add new row</td>
+  </tr></tbody>`;
 
   table.innerHTML = thead + tbody;
-  renderPag(tabId, total, pg, totalPages);
+  renderPag(tabId, total, curPg, totalPages);
 }
+
+function toggleSort(tabId, colKey) {
+  tabId = String(tabId);
+  if (!pagState[tabId]) pagState[tabId] = {pg:1, filter:'', sortCol:'', sortDir:'none'};
+  const st = pagState[tabId];
+  if (st.sortCol === colKey) {
+    // Cycle: none -> asc -> desc -> none
+    if (st.sortDir === 'none') st.sortDir = 'asc';
+    else if (st.sortDir === 'asc') st.sortDir = 'desc';
+    else { st.sortDir = 'none'; st.sortCol = ''; }
+  } else {
+    st.sortCol = colKey;
+    st.sortDir = 'asc';
+  }
+  st.pg = 1;
+  renderSheetTable(tabId);
+}
+
 
 
 function renderPag(tabId, total, current, totalPages) {
@@ -835,81 +912,146 @@ function renderPag(tabId, total, current, totalPages) {
       <button class="page-btn" ${current>=totalPages?'disabled':''} onclick="setTabPage('${tabId}',${totalPages})">»</button>
     </div>`;
 }
-function setTabPage(tabId, pg){const k=String(tabId);if(!pagState[k])pagState[k]={pg:1,filter:''};pagState[k].pg=Number(pg);renderSheetTable(k);}
+function setTabPage(tabId, pg){const k=String(tabId);if(!pagState[k])pagState[k]={pg:1,filter:'',sortCol:'',sortDir:'none'};pagState[k].pg=Number(pg);renderSheetTable(k);}
 
 // ═══════════════════════════════════════════
 // INLINE CELL EDITING
 // ═══════════════════════════════════════════
 let activeCell = null;
 function startCellEdit(el) {
-  if (activeCell && activeCell !== el) finishCellEdit(activeCell);
-  const type = el.dataset.type;
-  const val = el.dataset.val;
+  // Don't re-open if already editing this cell
+  if (activeCell === el) return;
+  // Close any other open cell
+  if (activeCell && activeCell !== el) {
+    activeCell.classList.remove('editing');
+    activeCell.contentEditable = 'false';
+    activeCell = null;
+  }
 
+  const type = el.dataset.type;
+  const val = el.dataset.val || '';
   activeCell = el;
   el.classList.add('editing');
 
-  if (type==='select') {
-    // Find column options
+  function nextCell() {
+    const td = el.closest('td');
+    const nextTd = td?.nextElementSibling;
+    const nextDiv = nextTd?.querySelector('.cell-inner');
+    if (nextDiv) nextDiv.click();
+  }
+
+  if (type === 'select') {
     const tabId = el.dataset.tabid;
-    const col = TABS.find(t=>String(t._dbid)===String(tabId))?.columns?.find(c=>c.key===el.dataset.col);
-    const opts = (col?.options||'').split(',').filter(Boolean);
+    const col = TABS.find(t => String(t._dbid) === String(tabId))
+                    ?.columns?.find(c => c.key === el.dataset.col);
+    const opts = (col?.options || '').split(',').map(s => s.trim()).filter(Boolean);
     const sel = document.createElement('select');
-    sel.style.cssText='background:var(--surface3);border:none;outline:none;color:var(--text);font-family:inherit;font-size:.78rem;width:100%;padding:0';
-    sel.innerHTML='<option value=""></option>'+opts.map(o=>`<option${o===val?' selected':''}>${o}</option>`).join('');
-    sel.onchange = ()=>{ saveCellEdit(el, sel.value); };
-    sel.onblur = ()=>{ saveCellEdit(el, sel.value); };
-    el.innerHTML=''; el.appendChild(sel); sel.focus();
-  } else if (type==='date') {
+    sel.style.cssText = 'background:var(--surface3);border:none;outline:none;color:var(--text);font-family:inherit;font-size:.8rem;width:100%;padding:2px 4px;cursor:pointer';
+    sel.innerHTML = '<option value="">— select —</option>' +
+      opts.map(o => `<option${o === val ? ' selected' : ''}>${o}</option>`).join('');
+    sel.onchange = () => saveCellEdit(el, sel.value);
+    sel.onblur   = () => saveCellEdit(el, sel.value);
+    sel.onkeydown = e => { if (e.key === 'Tab') { e.preventDefault(); saveCellEdit(el, sel.value); setTimeout(nextCell, 50); } };
+    el.innerHTML = ''; el.appendChild(sel); sel.focus();
+
+  } else if (type === 'date') {
     const inp = document.createElement('input');
-    inp.type='date'; inp.value=val;
-    inp.style.cssText='background:var(--surface3);border:none;outline:none;color:var(--text);font-family:inherit;font-size:.78rem;width:100%';
-    inp.onblur=()=>saveCellEdit(el,inp.value);
-    inp.onkeydown=e=>{if(e.key==='Enter')inp.blur();if(e.key==='Escape'){el.classList.remove('editing');el.textContent=fDate(val)||val;activeCell=null;}};
-    el.innerHTML=''; el.appendChild(inp); inp.focus();
-  } else if (type==='url') {
-    el.contentEditable='true';
-    el.textContent=val;
-    el.focus();
-    el.onblur=()=>saveCellEdit(el,el.textContent.trim());
-    el.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();el.blur();}if(e.key==='Escape'){el.classList.remove('editing');el.contentEditable='false';activeCell=null;}};
+    inp.type = 'date';
+    inp.value = val;
+    inp.style.cssText = 'background:var(--surface3);border:none;outline:none;color:var(--text);font-family:inherit;font-size:.8rem;width:100%;padding:2px 4px;cursor:pointer';
+    inp.onblur    = () => saveCellEdit(el, inp.value);
+    inp.onkeydown = e => {
+      if (e.key === 'Enter') inp.blur();
+      if (e.key === 'Tab')   { e.preventDefault(); saveCellEdit(el, inp.value); setTimeout(nextCell, 50); }
+      if (e.key === 'Escape') { el.classList.remove('editing'); rerenderCell(el, el.dataset.col, val); activeCell = null; }
+    };
+    el.innerHTML = ''; el.appendChild(inp); inp.focus();
+
+  } else if (type === 'url') {
+    // For URL: show editable text input
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.value = val;
+    inp.placeholder = 'https://…';
+    inp.style.cssText = 'background:var(--surface3);border:none;outline:none;color:var(--accent);font-family:inherit;font-size:.78rem;width:100%;padding:2px 4px';
+    inp.onblur    = () => saveCellEdit(el, inp.value.trim());
+    inp.onkeydown = e => {
+      if (e.key === 'Enter')  inp.blur();
+      if (e.key === 'Tab')    { e.preventDefault(); saveCellEdit(el, inp.value.trim()); setTimeout(nextCell, 50); }
+      if (e.key === 'Escape') { el.classList.remove('editing'); rerenderCell(el, el.dataset.col, val); activeCell = null; }
+    };
+    el.innerHTML = ''; el.appendChild(inp);
+    inp.focus(); inp.select();
+
   } else {
-    el.contentEditable='true';
-    el.textContent=val;
-    el.focus();
-    // Select all
-    const range=document.createRange(); range.selectNodeContents(el);
-    const sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
-    el.onblur=()=>saveCellEdit(el,el.textContent.trim());
-    el.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();el.blur();}if(e.key==='Escape'){el.classList.remove('editing');el.contentEditable='false';el.textContent=val;activeCell=null;}};
+    // text / number
+    const inp = document.createElement('input');
+    inp.type = type === 'number' ? 'number' : 'text';
+    inp.value = val;
+    inp.style.cssText = 'background:var(--surface3);border:none;outline:none;color:var(--text);font-family:inherit;font-size:.8rem;width:100%;padding:2px 4px';
+    inp.onblur    = () => saveCellEdit(el, inp.value.trim());
+    inp.onkeydown = e => {
+      if (e.key === 'Enter')  inp.blur();
+      if (e.key === 'Tab')    { e.preventDefault(); saveCellEdit(el, inp.value.trim()); setTimeout(nextCell, 50); }
+      if (e.key === 'Escape') { el.classList.remove('editing'); rerenderCell(el, el.dataset.col, val); activeCell = null; }
+    };
+    el.innerHTML = ''; el.appendChild(inp);
+    inp.focus(); inp.select();
   }
 }
 
 async function saveCellEdit(el, newVal) {
+  if (!el) return;
   el.classList.remove('editing');
-  el.contentEditable='false';
-  activeCell=null;
-  const tabId=el.dataset.tabid, dbid=el.dataset.dbid, colKey=el.dataset.col;
-  if (newVal===el.dataset.val) { rerenderCell(el,colKey,newVal); return; }
-  // Update in ROWS cache
-  const rows=ROWS[String(tabId)]||[];
-  const row=rows.find(r=>String(r._dbid)===String(dbid));
-  if (row) row[colKey]=newVal;
-  rerenderCell(el,colKey,newVal);
+  el.contentEditable = 'false';
+  activeCell = null;
+
+  const tabId = el.dataset.tabid;
+  const dbid  = el.dataset.dbid;
+  const colKey = el.dataset.col;
+  const oldVal = el.dataset.val;
+
+  // Always rerender to show correct display
+  rerenderCell(el, colKey, newVal);
+
+  // Skip Supabase save if nothing changed
+  if (newVal === oldVal) return;
+
+  // Update local cache
+  const rows = ROWS[String(tabId)] || ROWS[Number(tabId)] || [];
+  const row = rows.find(r => String(r._dbid) === String(dbid));
+  if (!row) return;
+  row[colKey] = newVal;
+
   // Save to Supabase
-  const fullRow={...row}; delete fullRow._dbid;
-  await sb.from('tab_rows').update({data:fullRow}).eq('id',dbid);
+  try {
+    const fullRow = {...row};
+    delete fullRow._dbid;
+    const {error} = await sb.from('tab_rows').update({data: fullRow}).eq('id', Number(dbid));
+    if (error) { toast('Save failed: ' + error.message, 'error'); }
+  } catch(e) {
+    toast('Save error', 'error');
+    console.error(e);
+  }
 }
 
 function rerenderCell(el, colKey, val) {
-  el.dataset.val=val;
-  const type=el.dataset.type;
-  let display=esc(val);
-  if(type==='date'&&val)display=fDate(val)||val;
-  if(type==='url'&&val&&val!=='Link')display=`<a href="${esc(val)}" target="_blank" style="color:var(--accent);font-size:.72rem;text-decoration:none">↗ Link</a>`;
-  else if(type==='url'&&val==='Link')display=`<span class="badge badge-done" style="font-size:.6rem">Link</span>`;
-  el.className='cell-inner '+statusClass(val);
-  el.innerHTML=display;
+  el.dataset.val = val;
+  const type = el.dataset.type;
+  let display = esc(val);
+  if (type === 'date' && val) display = esc(fDate(val) || val);
+  if (type === 'url') {
+    if (!val) display = '';
+    else if (val === 'Link') display = '<span class="badge badge-done" style="font-size:.6rem">Link</span>';
+    else {
+      const href = val.startsWith('http') ? val : 'https://' + val;
+      display = `<a href="${esc(href)}" target="_blank" rel="noopener"
+        style="color:var(--accent);font-size:.75rem;text-decoration:none;display:inline-flex;align-items:center;gap:3px"
+        onclick="event.stopPropagation()">↗ Open</a>`;
+    }
+  }
+  el.className = 'cell-inner ' + statusClass(val);
+  el.innerHTML = display;
 }
 
 // ═══════════════════════════════════════════
