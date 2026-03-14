@@ -392,7 +392,7 @@ function subscribeAll() {
     const tabId = payload.new?.tab_id || payload.old?.tab_id;
     if (tabId) {
       const {data} = await sb.from('tab_rows').select('*').eq('tab_id',tabId).order('id',{ascending:false});
-      ROWS[tabId] = (data||[]).map(r=>({...r.data,_dbid:r.id}));
+      ROWS[String(tabId)] = (data||[]).map(r=>({...r.data,_dbid:String(r.id)}));
       if(currentPage==='dashboard') renderDashboard();
       else if(currentTabId===tabId) renderSheetTable(tabId);
       updateBadges();
@@ -531,7 +531,7 @@ function buildNav() {
     <div class="nav-item" onclick="navigate('tab-${tab._dbid}')" id="nav-tab-${tab._dbid}">
       <span class="icon">${tab.icon||'📋'}</span>
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${tab.name}</span>
-      <span class="nbadge" id="badge-tab-${tab._dbid}">${(ROWS[tab._dbid]||[]).length}</span>
+      <span class="nbadge" id="badge-tab-${tab._dbid}">${(ROWS[String(tab._dbid)]||[]).length}</span>
       ${!BUILTIN_IDS.includes(tab.id)?`<span class="nav-del" onclick="deleteTab(event,'${tab._dbid}')">✕</span>`:''}
     </div>`).join('');
 }
@@ -596,7 +596,7 @@ function rerenderCurrent() {
 function updateBadges() {
   TABS.forEach(tab=>{
     const el=document.getElementById('badge-tab-'+tab._dbid);
-    if(el) el.textContent=(ROWS[tab._dbid]||[]).length;
+    if(el) el.textContent=(ROWS[String(tab._dbid)]||[]).length;
   });
 }
 
@@ -614,7 +614,7 @@ function statusClass(v){const l=(v||'').toLowerCase();if(l==='complete'||l==='do
 // ═══════════════════════════════════════════
 function renderDashboard() {
   const cpTab = TABS.find(t=>t.id==='creative');
-  const cpRows = cpTab ? (ROWS[cpTab._dbid]||[]) : [];
+  const cpRows = cpTab ? (ROWS[String(cpTab._dbid)]||[]) : [];
   const statusKey = col => {
     const tab = TABS.find(t=>t.id===col);
     if (!tab) return null;
@@ -690,7 +690,7 @@ function renderDashboard() {
 function renderSheetPage(tabId) {
   const tab = TABS.find(t=>String(t._dbid)===String(tabId));
   if (!tab) return;
-  const rows = ROWS[String(tabId)]||[];
+  const rows = ROWS[String(tabId)] || ROWS[Number(tabId)] || [];
   const done = rows.filter(r=>(r.status||'').toLowerCase()==='complete').length;
   const pending = rows.filter(r=>(r.status||'').toLowerCase()==='pending').length;
   const upcoming = rows.filter(r=>(r.status||'').toLowerCase()==='upcoming').length;
@@ -707,22 +707,24 @@ function renderSheetPage(tabId) {
 }
 
 function filterSheet(tabId, statusVal) {
-  // Set a filter and re-render
-  if (!pagState[tabId]) pagState[tabId]={pg:1,filter:''};
-  pagState[tabId].filter = statusVal;
-  pagState[tabId].pg = 1;
-  renderSheetTable(tabId);
+  const k = String(tabId);
+  if (!pagState[k]) pagState[k]={pg:1,filter:''};
+  pagState[k].filter = statusVal;
+  pagState[k].pg = 1;
+  renderSheetTable(k);
 }
 
 function renderSheetTable(tabId) {
   const tab = TABS.find(t=>String(t._dbid)===String(tabId));
-  if (!tab) return;
+  if (!tab) { console.warn('renderSheetTable: tab not found for', tabId, 'TABS:', TABS.map(t=>t._dbid)); return; }
   const cols = tab.columns||[];
   const search = (document.getElementById('search-'+tabId)?.value||'').toLowerCase();
-  const filter = pagState[tabId]?.filter||'';
-  const pg = pagState[tabId]?.pg||1;
+  const filter = pagState[String(tabId)]?.filter||'';
+  const pg = pagState[String(tabId)]?.pg||1;
 
-  let rows = [...(ROWS[String(tabId)]||[])];
+  // Try both string and number keys
+  let rows = [...(ROWS[String(tabId)] || ROWS[Number(tabId)] || [])];
+  console.log('renderSheetTable tabId='+tabId+' rows='+rows.length+' cols='+cols.length+' ROWS keys='+Object.keys(ROWS));
   // filter
   if (filter) rows=rows.filter(r=>(r.status||'').toLowerCase()===filter);
   if (search) rows=rows.filter(r=>JSON.stringify(r).toLowerCase().includes(search));
@@ -801,7 +803,7 @@ function renderPag(tabId, total, current, totalPages) {
       <button class="page-btn" ${current>=totalPages?'disabled':''} onclick="setTabPage('${tabId}',${totalPages})">»</button>
     </div>`;
 }
-function setTabPage(tabId, pg){if(!pagState[tabId])pagState[tabId]={pg:1,filter:''};pagState[tabId].pg=Number(pg);renderSheetTable(tabId);}
+function setTabPage(tabId, pg){const k=String(tabId);if(!pagState[k])pagState[k]={pg:1,filter:''};pagState[k].pg=Number(pg);renderSheetTable(k);}
 
 // ═══════════════════════════════════════════
 // INLINE CELL EDITING
@@ -858,7 +860,7 @@ async function saveCellEdit(el, newVal) {
   const tabId=el.dataset.tabid, dbid=el.dataset.dbid, colKey=el.dataset.col;
   if (newVal===el.dataset.val) { rerenderCell(el,colKey,newVal); return; }
   // Update in ROWS cache
-  const rows=ROWS[tabId]||[];
+  const rows=ROWS[String(tabId)]||[];
   const row=rows.find(r=>String(r._dbid)===String(dbid));
   if (row) row[colKey]=newVal;
   rerenderCell(el,colKey,newVal);
@@ -929,7 +931,7 @@ async function endResize(){
 async function addRow(tabId) {
   const tab=TABS.find(t=>String(t._dbid)===String(tabId));
   if(!tab)return;
-  const rows=ROWS[tabId]||[];
+  const rows=ROWS[String(tabId)]||[];
   const newId=(rows.length?Math.max(...rows.map(r=>Number(r.id)||0))+1:1);
   const newRow={id:newId};
   tab.columns.forEach(c=>{if(c.key!=='id')newRow[c.key]='';});
